@@ -1,0 +1,149 @@
+package com.campus.scheduler.repo;
+
+import com.campus.scheduler.model.JobInfo;
+import lombok.RequiredArgsConstructor;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowMapper;
+import org.springframework.jdbc.support.GeneratedKeyHolder;
+import org.springframework.jdbc.support.KeyHolder;
+import org.springframework.stereotype.Repository;
+
+import java.sql.PreparedStatement;
+import java.sql.Statement;
+import java.sql.Timestamp;
+import java.time.LocalDateTime;
+import java.util.List;
+
+@Repository
+@RequiredArgsConstructor
+public class JobInfoRepo {
+
+    private final JdbcTemplate jdbc;
+
+    public static final RowMapper<JobInfo> MAPPER = (rs, i) -> {
+        JobInfo j = new JobInfo();
+        j.setId(rs.getLong("id"));
+        j.setJobName(rs.getString("job_name"));
+        j.setCronExpr(rs.getString("cron_expr"));
+        j.setHandlerType(rs.getInt("handler_type"));
+        j.setHandlerValue(rs.getString("handler_value"));
+        j.setParam(rs.getString("param"));
+        j.setTimeoutSec(rs.getInt("timeout_sec"));
+        j.setMaxRetry(rs.getInt("max_retry"));
+        j.setMisfireStrategy(rs.getInt("misfire_strategy"));
+        j.setStatus(rs.getInt("status"));
+        Timestamp nt = rs.getTimestamp("next_trigger_time");
+        j.setNextTriggerTime(nt == null ? null : nt.toLocalDateTime());
+        Timestamp ct = rs.getTimestamp("create_time");
+        j.setCreateTime(ct == null ? null : ct.toLocalDateTime());
+        Timestamp ut = rs.getTimestamp("update_time");
+        j.setUpdateTime(ut == null ? null : ut.toLocalDateTime());
+        return j;
+    };
+
+    /**
+     * ★★ 调度循环的入口：捞出「已经到点」的任务。
+     *
+     * <p>靠 {@code idx_due (status, next_trigger_time)} 走索引，
+     * 不然任务一多就退化成全表扫描。
+     *
+     * <p>加了 LIMIT：一次扫太多会把调度循环卡住。剩下的下一轮再处理，
+     * 反正下一秒还会扫。
+     */
+    public List<JobInfo> findDue(int limit) {
+        return jdbc.query("""
+                SELECT * FROM job_info
+                 WHERE status = 1
+                   AND next_trigger_time IS NOT NULL
+                   AND next_trigger_time <= NOW()
+                 ORDER BY next_trigger_time
+                 LIMIT ?
+                """, MAPPER, limit);
+    }
+
+    /**
+     * ★★ 抢占这次触发 —— 整个项目最关键的一行 SQL。
+     *
+     * <pre>
+     * UPDATE job_info SET next_trigger_time = 下次
+     *  WHERE id = ? AND next_trigger_time = 旧值
+     * </pre>
+     *
+     * <p>为什么这样就够了：多个 Admin 实例同时扫到同一个到点任务时，
+     * 它们手里的「旧值」是同一个时刻。第一个 UPDATE 成功后，
+     * 第二个的 WHERE 条件不再成立 → 影响 0 行 → 它就知道自己没抢到，直接跳过。
+     *
+     * <p><b>这正是乐观锁</b>（CAS 思想）：不加锁、不阻塞，用「比较并交换」保证只有一个赢。
+     * 好处是少一个 Redis 组件；代价是高并发时失败的一方要重试，
+     * 但调度场景下同一任务被同时抢的概率很低，完全划算。
+     *
+     * @return 影响行数。**1 才代表抢到了**，0 说明别人先动手了
+     */
+    public int advanceTriggerTime(Long id, LocalDateTime expectedOld, LocalDateTime next) {
+        return jdbc.update(
+                "UPDATE job_info SET next_trigger_time = ? WHERE id = ? AND next_trigger_time = ?",
+                Timestamp.valueOf(next), id, Timestamp.valueOf(expectedOld));
+    }
+
+    public List<JobInfo> findAll() {
+        return jdbc.query("SELECT * FROM job_info ORDER BY id", MAPPER);
+    }
+
+    public JobInfo findById(Long id) {
+        List<JobInfo> r = jdbc.query("SELECT * FROM job_info WHERE id = ?", MAPPER, id);
+        return r.isEmpty() ? null : r.get(0);
+    }
+
+    public JobInfo findByName(String name) {
+        List<JobInfo> r = jdbc.query("SELECT * FROM job_info WHERE job_name = ?", MAPPER, name);
+        return r.isEmpty() ? null : r.get(0);
+    }
+
+    public Long insert(JobInfo j) {
+        KeyHolder kh = new GeneratedKeyHolder();
+        jdbc.update(con -> {
+            PreparedStatement ps = con.prepareStatement("""
+                    INSERT INTO job_info
+                      (job_name, cron_expr, handler_type, handler_value, param,
+                       timeout_sec, max_retry, misfire_strategy, status, next_trigger_time)
+                    VALUES (?,?,?,?,?,?,?,?,?,?)
+                    """, Statement.RETURN_GENERATED_KEYS);
+            ps.setString(1, j.getJobName());
+            ps.setString(2, j.getCronExpr());
+            ps.setInt(3, j.getHandlerType());
+            ps.setString(4, j.getHandlerValue());
+            ps.setString(5, j.getParam());
+            ps.setInt(6, j.getTimeoutSec());
+            ps.setInt(7, j.getMaxRetry());
+            ps.setInt(8, j.getMisfireStrategy());
+            ps.setInt(9, j.getStatus());
+            ps.setTimestamp(10, j.getNextTriggerTime() == null
+                    ? null : Timestamp.valueOf(j.getNextTriggerTime()));
+            return ps;
+        }, kh);
+        return kh.getKey().longValue();
+    }
+
+    public int update(JobInfo j) {
+        return jdbc.update("""
+                UPDATE job_info
+                   SET cron_expr = ?, handler_type = ?, handler_value = ?, param = ?,
+                       timeout_sec = ?, max_retry = ?, misfire_strategy = ?,
+                       status = ?, next_trigger_time = ?
+                 WHERE id = ?
+                """,
+                j.getCronExpr(), j.getHandlerType(), j.getHandlerValue(), j.getParam(),
+                j.getTimeoutSec(), j.getMaxRetry(), j.getMisfireStrategy(),
+                j.getStatus(),
+                j.getNextTriggerTime() == null ? null : Timestamp.valueOf(j.getNextTriggerTime()),
+                j.getId());
+    }
+
+    public int setStatus(Long id, int status) {
+        return jdbc.update("UPDATE job_info SET status = ? WHERE id = ?", status, id);
+    }
+
+    public int delete(Long id) {
+        return jdbc.update("DELETE FROM job_info WHERE id = ?", id);
+    }
+}
