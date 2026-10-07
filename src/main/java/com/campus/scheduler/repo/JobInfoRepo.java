@@ -62,6 +62,27 @@ public class JobInfoRepo {
     }
 
     /**
+     * ★ 预取用：捞出「未来 N 秒内将要到点」的任务，提前装进内存。
+     *
+     * <p>这是 {@link com.campus.scheduler.core.PrefetchScheduler} 的基础。
+     * 和 {@link #findDue} 的区别：那个只看「已经到点」的，这个看「即将到点」的。
+     *
+     * <p>为什么需要预取：如果每次都查「已经到点」的，那么从「到点」到
+     * 「发现它到点」之间的延迟就不可避免地等于扫描间隔。提前把任务装进内存，
+     * 到点那一刻可以直接触发，精度只受限于内存定时器的唤醒精度。
+     */
+    public List<JobInfo> findUpcoming(int withinSec, int limit) {
+        return jdbc.query("""
+                SELECT * FROM job_info
+                 WHERE status = 1
+                   AND next_trigger_time IS NOT NULL
+                   AND next_trigger_time <= NOW() + INTERVAL ? SECOND
+                 ORDER BY next_trigger_time
+                 LIMIT ?
+                """, MAPPER, withinSec, limit);
+    }
+
+    /**
      * ★★ 抢占这次触发 —— 整个项目最关键的一行 SQL。
      *
      * <pre>

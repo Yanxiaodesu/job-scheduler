@@ -22,8 +22,28 @@ public class SchedulerProperties {
     /** 本实例标识，抢锁和日志里用来区分 */
     private String instanceId = "local";
 
-    /** 调度循环扫描间隔（毫秒） */
+    /** 调度循环多久扫一次到点任务（毫秒） */
     private long scanIntervalMs = 1000;
+
+    /**
+     * 是否启用「内存延迟队列」调度（预取模式）。
+     *
+     * <p>开着的时候，{@link #scanIntervalMs} 建议调大（如 5000ms）——
+     * 内存队列负责精度，轮询退居为兜底，两条路重叠触发也无害
+     * （抢占机制保证只有一个能成）。
+     */
+    private boolean prefetchEnabled = true;
+
+    /** 预取线程多久扫一次「即将到点」的任务（毫秒） */
+    private long prefetchIntervalMs = 1000;
+
+    /**
+     * 预取多大的时间窗口（秒）。
+     *
+     * <p>窗口要比预取间隔大几倍，留够冗余：
+     * 万一某次预取查询慢了几百毫秒，也不会漏掉任务。
+     */
+    private int prefetchWindowSec = 3;
 
     /** 故障转移扫描间隔（毫秒） */
     private long failoverIntervalMs = 30000;

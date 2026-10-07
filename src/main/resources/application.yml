@@ -25,10 +25,22 @@ scheduler:
   instance-id: ${INSTANCE_ID:local-${server.port}}
 
   # 调度循环多久扫一次到点任务。
-  # ★ 这个值直接决定调度精度：轮询式扫描的平均延迟 ≈ 间隔的一半。
-  #   实测：1000ms → P50 561ms；200ms → P50 约 110ms。
-  #   代价是 DB 查询频率成比例上升 —— 这就是「精度 vs 数据库压力」的取舍。
-  scan-interval-ms: ${SCAN_INTERVAL_MS:1000}
+  # ★ 精度取决于走哪条路：
+  #     开预取（默认）→ 精度由内存队列保证，这个值设大当兜底即可
+  #     关预取        → 这个值直接决定精度，平均延迟 ≈ 间隔的一半
+  #                     实测 1000ms → P50 561ms；200ms → P50 108ms
+  scan-interval-ms: ${SCAN_INTERVAL_MS:5000}
+
+  # ---------- 内存延迟队列（预取）调度 ----------
+  # 提前把「即将到点」的任务装进内存 DelayQueue，到点直接触发：
+  #   · 精度不再受扫描间隔限制
+  #   · 空闲时工作线程阻塞在 take() 上，不占 CPU
+  #   · 预取查询频率只有每秒 1 次
+  # 两条路可以同时开 —— 抢占机制（唯一键 + 乐观锁）保证只有一个能成。
+  prefetch-enabled: ${PREFETCH_ENABLED:true}
+  prefetch-interval-ms: ${PREFETCH_INTERVAL_MS:1000}
+  # 预取窗口（秒），要比预取间隔大几倍，留冗余防止漏任务
+  prefetch-window-sec: ${PREFETCH_WINDOW_SEC:3}
 
   # 故障转移扫描间隔
   failover-interval-ms: 30000

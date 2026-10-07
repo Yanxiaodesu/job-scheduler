@@ -36,6 +36,8 @@ public class MetricsController {
     private final com.campus.scheduler.api.CallbackController callback;
     private final com.campus.scheduler.executor.ExecutorEndpoint executorEndpoint;
     private final com.campus.scheduler.core.InstanceDispatcher instanceDispatcher;
+    private final com.campus.scheduler.core.JobTrigger trigger;
+    private final com.campus.scheduler.core.PrefetchScheduler prefetch;
 
     @GetMapping
     public Map<String, Object> metrics() {
@@ -48,13 +50,22 @@ public class MetricsController {
 
         Map<String, Object> sched = new LinkedHashMap<>();
         sched.put("scanRounds", scheduler.statScanRounds.get());
-        sched.put("seenDue", scheduler.statSeenDue.get());
-        sched.put("triggered", scheduler.statTriggered.get());
+        sched.put("seenDue", trigger.statSeenDue.get());
+        sched.put("triggered", trigger.statTriggered.get());
         // ★ 这个数字是关键证据：>0 说明并发防护真的拦住了重复派发
-        sched.put("lostTheRace", scheduler.statLostTheRace.get());
-        sched.put("noExecutor", scheduler.statNoExecutor.get());
-        sched.put("dispatchFailed", scheduler.statDispatchFail.get());
+        sched.put("lostTheRace", trigger.statLostTheRace.get());
+        sched.put("noExecutor", trigger.statNoExecutor.get());
+        sched.put("dispatchFailed", trigger.statDispatchFail.get());
         m.put("scheduler", sched);
+
+        // 内存延迟队列（预取）的状态
+        Map<String, Object> pf = new LinkedHashMap<>();
+        pf.put("enabled", props.isPrefetchEnabled());
+        pf.put("queueSize", prefetch.queueSize());
+        pf.put("prefetched", prefetch.statPrefetched.get());
+        pf.put("firedFromQueue", prefetch.statFired.get());
+        pf.put("prefetchWindowSec", props.getPrefetchWindowSec());
+        m.put("prefetch", pf);
 
         Map<String, Object> fo = new LinkedHashMap<>();
         fo.put("offlineMarked", failover.statOfflineMarked.get());
