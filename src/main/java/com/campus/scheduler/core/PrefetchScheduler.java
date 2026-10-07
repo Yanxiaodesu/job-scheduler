@@ -10,7 +10,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
-import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Set;
@@ -197,11 +196,8 @@ public class PrefetchScheduler {
         return queue.size();
     }
 
-    /**
-     * 判断一个触发时刻是不是已经过去太久（预取到的任务可能在队列里等了一会，
-     * 期间被别的实例抢先触发并推进了时间）。
-     */
-    static boolean isStale(LocalDateTime triggerTime, int toleranceSec) {
-        return Duration.between(triggerTime, LocalDateTime.now()).getSeconds() > toleranceSec;
+    /** 已入队去重集合大小，给指标和测试用 */
+    public int pendingKeys() {
+        return enqueued.size();
     }
 }
