@@ -1,0 +1,55 @@
+server:
+  port: ${PORT:8080}
+
+spring:
+  application:
+    name: job-scheduler
+  datasource:
+    url: jdbc:mysql://127.0.0.1:3306/job_scheduler?useSSL=false&serverTimezone=Asia/Shanghai&characterEncoding=utf8&allowPublicKeyRetrieval=true
+    username: root
+    password: root
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+
+scheduler:
+  # ★ 这个项目一个代码库能跑三种角色，靠这个开关切换：
+  #     admin    只做调度（扫描、路由、派发、故障转移）
+  #     executor 只做执行（注册、心跳、接收派发、执行、回调）
+  #     both     单进程同时干两件事 —— 本机调试用
+  #   压测「多 Admin 不重复派发」时，起 3 个 role=admin 的实例即可。
+  role: ${ROLE:both}
+
+  # 本实例标识，抢锁和日志里用来区分是谁干的
+  instance-id: ${INSTANCE_ID:local-${server.port}}
+
+  # 调度循环多久扫一次到点任务。
+  # ★ 这个值直接决定调度精度：轮询式扫描的平均延迟 ≈ 间隔的一半。
+  #   实测：1000ms → P50 561ms；200ms → P50 约 110ms。
+  #   代价是 DB 查询频率成比例上升 —— 这就是「精度 vs 数据库压力」的取舍。
+  scan-interval-ms: ${SCAN_INTERVAL_MS:1000}
+
+  # 故障转移扫描间隔
+  failover-interval-ms: 30000
+
+  # 超过这个时长没被执行的任务，算「错过」（misfire）
+  misfire-threshold-sec: 300
+
+  # Admin 的回调地址：执行器跑完结果后 POST 到这里。
+  # 由 Admin 在派发时带过去，执行器不用自己配置。
+  callback-url: ${CALLBACK_URL:http://127.0.0.1:${server.port}/api/internal/callback}
+
+  executor:
+    # 执行器分组名。Admin 只会把任务派给同名的执行器
+    app-name: ${APP_NAME:demo}
+    # 本执行器的回调地址，注册到 DB 里给 Admin 用
+    address: ${ADDRESS:http://127.0.0.1:${server.port}}
+    # 心跳间隔
+    heartbeat-interval-ms: 10000
+    # 超过这么久没心跳就判定离线，任务会被转移
+    offline-threshold-sec: 30
+
+logging:
+  level:
+    com.campus.scheduler: INFO
