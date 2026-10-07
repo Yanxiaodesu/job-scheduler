@@ -1,0 +1,12 @@
+# 构建镜像时不需要传进去的东西
+target/
+logs/
+.git/
+.idea/
+*.iml
+mvnw
+mvnw.cmd
+.mvn/
+README.md
+HELP.md
+scripts/

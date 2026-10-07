@@ -1,0 +1,95 @@
+# ============================================================
+#  一条命令起全套：MySQL + 1 个调度中心 + 2 个执行器
+#
+#    docker compose up --build
+#
+#  起来之后：
+#    http://127.0.0.1:8080/api/jobs      任务列表
+#    http://127.0.0.1:8080/api/metrics   运行指标
+#
+#  想看「多 Admin 并发不重复派发」，把 admin 服务复制两份改端口即可，
+#  或者用 profiles 起一个 3 副本的集群（见 README）。
+# ============================================================
+
+services:
+
+  # ---------- 数据库 ----------
+  mysql:
+    image: mysql:8.0
+    container_name: js-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: job_scheduler
+      TZ: Asia/Shanghai
+    # 首次启动会自动执行这个目录下的 .sql
+    volumes:
+      - ./sql/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - mysql-data:/var/lib/mysql
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --default-time-zone=+08:00
+    healthcheck:
+      # 一定要等 MySQL 真的可用了再起应用，否则应用启动就连不上
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    ports:
+      - "3307:3306"     # 映射到 3307，避免和本机已装的 MySQL 抢 3306
+
+  # ---------- 调度中心 ----------
+  admin:
+    build: .
+    container_name: js-admin
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      ROLE: admin
+      PORT: 8080
+      INSTANCE_ID: admin-docker-1
+      APP_NAME: demo
+      SCAN_INTERVAL_MS: 200
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/job_scheduler?useSSL=false&serverTimezone=Asia/Shanghai&characterEncoding=utf8&allowPublicKeyRetrieval=true
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: root
+    ports:
+      - "8080:8080"
+
+  # ---------- 执行器（两个，验证路由和故障转移）----------
+  executor1:
+    build: .
+    container_name: js-executor1
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      ROLE: executor
+      PORT: 9001
+      INSTANCE_ID: exec-docker-1
+      APP_NAME: demo
+      ADDRESS: http://executor1:9001
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/job_scheduler?useSSL=false&serverTimezone=Asia/Shanghai&characterEncoding=utf8&allowPublicKeyRetrieval=true
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: root
+
+  executor2:
+    build: .
+    container_name: js-executor2
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      ROLE: executor
+      PORT: 9002
+      INSTANCE_ID: exec-docker-2
+      APP_NAME: demo
+      ADDRESS: http://executor2:9002
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/job_scheduler?useSSL=false&serverTimezone=Asia/Shanghai&characterEncoding=utf8&allowPublicKeyRetrieval=true
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: root
+
+volumes:
+  mysql-data:
