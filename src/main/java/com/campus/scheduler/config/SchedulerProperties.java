@@ -45,6 +45,17 @@ public class SchedulerProperties {
      */
     private int prefetchWindowSec = 3;
 
+    /**
+     * 是否启动「内存队列的后台工作线程」。
+     *
+     * <p>默认开着。**测试里要关掉** —— 否则后台线程会和测试自己调用的
+     * {@code fireDueNow()} 抢同一个队列，谁先拿到算谁的，断言就成了掷骰子。
+     *
+     * <p>为什么不复用 {@link #prefetchEnabled}：那个控制的是「要不要预取」，
+     * 测试需要的是「预取照常、但别起后台线程」。两件事，两个开关。
+     */
+    private boolean prefetchWorkerEnabled = true;
+
     /** 故障转移扫描间隔（毫秒） */
     private long failoverIntervalMs = 30000;
 

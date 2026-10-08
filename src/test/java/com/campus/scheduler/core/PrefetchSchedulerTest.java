@@ -43,6 +43,10 @@ import static org.junit.jupiter.api.Assertions.*;
         "scheduler.prefetch-enabled=true",
         // 关掉自动预取（否则会和测试自己的调用抢），手动调
         "scheduler.prefetch-interval-ms=3600000",
+        // ★ 关掉后台工作线程：它和测试自己调的 fireDueNow() 会抢同一个队列，
+        //   谁先拿到算谁的 —— 那样断言就成了掷骰子。
+        //   响应的触发逻辑仍然被测到，因为两者共用同一个 process()。
+        "scheduler.prefetch-worker-enabled=false",
         "scheduler.prefetch-window-sec=3",
         "scheduler.executor.app-name=prefetch-test"
 })
@@ -80,36 +84,19 @@ class PrefetchSchedulerTest {
     /**
      * 清场。
      *
-     * <p><b>关键是要先排空队列</b>：{@link PrefetchScheduler} 是单例，
-     * 它的 {@code DelayQueue} 和去重集合会被所有测试共享。上一个测试
-     * 留在队列里的任务，会被工作线程消费掉并真的触发一次 —— 于是
-     * 下一个测试就会看到「凭空多出来一条实例」和「队列数对不上」。
+     * <p>{@link PrefetchScheduler} 是单例，队列和去重集合被所有测试共享，
+     * 所以每个测试开始前必须清干净。
      *
-     * <p><b>而且还要再等一会</b>：工作线程是「先 remove 再 fire」——
-     * <pre>
-     * DueJob due = queue.take();
-     * enqueued.remove(due.key());   // 这时 queueSize() 已经是 0
-     * trigger.fire(due.job());      // 但 fire 还没跑完
-     * </pre>
-     * 所以 {@code queueSize()==0} 只说明元素被取走了，不代表处理完了。
-     * 不等这一下，上一轮的 fire 会在我们删完表**之后**才落下一条实例，
-     * 让下个测试的「等实例出现」立刻返回 —— 而那条实例属于上一个任务，
-     * 它的 next_trigger_time 当然没变，断言就挂了。
+     * <p><b>这里是同步清空，不是「睡一会儿等工作线程」。</b>
+     * 原来的写法是排空队列 + 等 1 秒，在快机器上没问题；CI 的 runner 慢，
+     * 等待超时后残留任务就串到下一个测试 —— CI 上的症状是
+     * 「队列里积了 3 个任务」，而那正是一个断言的失败原因。
      *
-     * <p>（这就是这个文件一开始会 flaky 的根因：本地十次过九次、CI 上必挂。
-     * 「等一个模糊条件成立」+「共享可变状态」凑在一起最容易出这种问题。）
+     * <p>测试的可靠性不该建立在「机器够快」上。
      */
     @BeforeEach
-    void clean() throws Exception {
-        // 超时给得比本地宽松：CI 的 runner 是 2 核共享，比开发机慢不少，
-        // 按本地节奏设超时会让测试在 CI 上变成「随机失败」
-        long deadline = System.currentTimeMillis() + 15000;
-        while (prefetch.queueSize() > 0 && System.currentTimeMillis() < deadline) {
-            Thread.sleep(50);
-        }
-        // 等可能还在 fire 里的那一个跑完
-        Thread.sleep(1000);
-
+    void clean() {
+        prefetch.clearQueue();
         jdbc.update("DELETE FROM job_instance");
         jdbc.update("DELETE FROM job_log");
         jdbc.update("DELETE FROM executor_registry");
@@ -128,6 +115,17 @@ class PrefetchSchedulerTest {
         return jdbc.queryForObject("SELECT id FROM job_info WHERE job_name = ?", Long.class, name);
     }
 
+    /** 建一个**已经到点**的任务（next_trigger_time = 数据库的现在） */
+    private long dueJob(String name) {
+        jdbc.update("""
+                INSERT INTO job_info
+                  (job_name, cron_expr, handler_type, handler_value, param,
+                   timeout_sec, max_retry, misfire_strategy, status, next_trigger_time)
+                VALUES (?, '* * * * * *', 1, 'printTime', NULL, 10, 0, 2, 1, NOW(3))
+                """, name);
+        return jdbc.queryForObject("SELECT id FROM job_info WHERE job_name = ?", Long.class, name);
+    }
+
     private void healthyExecutor() {
         jdbc.update("""
                 INSERT INTO executor_registry (app_name, address, last_heartbeat, status)
@@ -140,23 +138,6 @@ class PrefetchSchedulerTest {
         Integer n = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM job_instance WHERE job_id = ?", Integer.class, jobId);
         return n == null ? 0 : n;
-    }
-
-    /**
-     * 等**指定任务**的实例出现。
-     *
-     * <p>不能用「表里有没有实例」这种模糊条件 —— 上一轮的残留会让它立刻返回，
-     * 于是断言的是别人的数据。
-     */
-    private boolean awaitInstanceOf(long jobId, int timeoutMs) throws InterruptedException {
-        long deadline = System.currentTimeMillis() + timeoutMs;
-        while (System.currentTimeMillis() < deadline) {
-            if (instancesOf(jobId) > 0) {
-                return true;
-            }
-            Thread.sleep(50);
-        }
-        return false;
     }
 
     @Test
@@ -209,17 +190,20 @@ class PrefetchSchedulerTest {
     }
 
     @Test
-    @DisplayName("到点后工作线程会自动触发并派发")
-    void firesWhenDue() throws Exception {
+    @DisplayName("到点后触发并派发")
+    void firesWhenDue() {
         healthyExecutor();
-        long id = job("fire-me", 1);       // 1 秒后到点
+        long id = dueJob("fire-me");       // 已经到点
 
         prefetch.prefetch();
         assertEquals(1, prefetch.queueSize(), "应该已经入队");
 
-        // 等工作线程到点醒来。等的是**这个任务自己**的实例。
-        // 超时放宽到 20 秒 —— 断的还是自己写错，不是机器慢
-        assertTrue(awaitInstanceOf(id, 20000), "到点后应该自动产生实例并派发出去");
+        // ★ 同步处理，不等后台线程。
+        //
+        // 工作线程的循环就是 take() + process()，而 fireDueNow() 是 poll() + process()
+        // —— 两者共用同一个 process()，所以这里覆盖的仍然是生产代码路径。
+        // 换成同步调用之后，测试不再依赖「机器够快、时钟够准」，也就不会再 flaky。
+        assertEquals(1, prefetch.fireDueNow(), "应该处理掉 1 个到点任务");
 
         assertEquals(1, instancesOf(id), "这个任务应该只产生一条实例");
         assertEquals(0, prefetch.queueSize(), "触发后队列应该空了");
@@ -231,19 +215,31 @@ class PrefetchSchedulerTest {
 
     @Test
     @DisplayName("触发后 next_trigger_time 被推进到下一次，否则会被反复触发")
-    void advancesTriggerTimeAfterFire() throws Exception {
+    void advancesTriggerTimeAfterFire() {
         healthyExecutor();
-        long id = job("advance-me", 1);
+        long id = dueJob("advance-me");
         var before = jdbc.queryForObject(
                 "SELECT next_trigger_time FROM job_info WHERE id = ?", LocalDateTime.class, id);
 
         prefetch.prefetch();
-        assertTrue(awaitInstanceOf(id, 20000), "前提：这个任务应该被触发了");
+        assertEquals(1, prefetch.fireDueNow(), "前提：这个任务应该被触发了");
 
         var after = jdbc.queryForObject(
                 "SELECT next_trigger_time FROM job_info WHERE id = ?", LocalDateTime.class, id);
         assertNotNull(after);
         assertTrue(after.isAfter(before),
                 "触发后应该把 next_trigger_time 推进到下一次，否则会被反复触发");
+    }
+
+    @Test
+    @DisplayName("没到点的任务不会被 fireDueNow 取走，会留在队列里")
+    void fireDueNowLeavesNotYetDue() {
+        long id = job("not-yet", 30);      // 30 秒后到点，不在 3 秒预取窗口内
+
+        prefetch.prefetch();
+        assertEquals(0, prefetch.queueSize(), "窗口外的任务压根不该入队");
+
+        assertEquals(0, prefetch.fireDueNow(), "没有到点任务时应该什么都不做");
+        assertEquals(0, instancesOf(id), "不该产生实例");
     }
 }

@@ -104,7 +104,7 @@ public class PrefetchScheduler {
 
     @PostConstruct
     public void start() {
-        if (!props.isAdmin() || !props.isPrefetchEnabled()) {
+        if (!props.isAdmin() || !props.isPrefetchEnabled() || !props.isPrefetchWorkerEnabled()) {
             return;
         }
         running = true;
@@ -136,9 +136,10 @@ public class PrefetchScheduler {
             return;
         }
         try {
-            List<JobInfo> upcoming = jobRepo.findUpcoming(props.getPrefetchWindowSec(), 1000);
+            List<JobInfoRepo.Upcoming> upcoming = jobRepo.findUpcoming(props.getPrefetchWindowSec(), 1000);
             int added = 0;
-            for (JobInfo job : upcoming) {
+            for (JobInfoRepo.Upcoming up : upcoming) {
+                JobInfo job = up.job();
                 if (job.getNextTriggerTime() == null) {
                     continue;
                 }
@@ -146,9 +147,10 @@ public class PrefetchScheduler {
                 if (!enqueued.add(key)) {
                     continue;   // 已经在队列里了
                 }
-                long dueAt = job.getNextTriggerTime()
-                        .atZone(java.time.ZoneId.systemDefault())
-                        .toInstant().toEpochMilli();
+                // ★ 用**数据库算出来的**相对时长，而不是拿 DB 的墙上时间去套 JVM 时区。
+                //   后者在两边时区不一致时会算错（详见 JobInfoRepo.Upcoming 的注释）：
+                //   任务永远不到点 → take() 一直阻塞 → 队列越积越多。
+                long dueAt = System.currentTimeMillis() + up.dueInMicros() / 1000;
                 queue.offer(new DueJob(job, dueAt, key));
                 added++;
             }
@@ -173,14 +175,7 @@ public class PrefetchScheduler {
         while (running) {
             try {
                 DueJob due = queue.take();          // 阻塞到下一个到点
-                enqueued.remove(due.key());
-                try {
-                    if (trigger.fire(due.job(), "prefetch")) {
-                        statFired.incrementAndGet();
-                    }
-                } catch (Exception e) {
-                    log.error("触发失败 job={}", due.job().getJobName(), e);
-                }
+                process(due);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return;
@@ -191,9 +186,58 @@ public class PrefetchScheduler {
         }
     }
 
+    private void process(DueJob due) {
+        enqueued.remove(due.key());
+        try {
+            if (trigger.fire(due.job(), "prefetch")) {
+                statFired.incrementAndGet();
+            }
+        } catch (Exception e) {
+            log.error("触发失败 job={}", due.job().getJobName(), e);
+        }
+    }
+
+    /**
+     * ★ 同步处理掉「已经到点」的任务，返回处理了几个。
+     *
+     * <p><b>工作线程用的就是它</b>（{@code loop()} 只是先 {@code take()} 阻塞等待，
+     * 再调这里处理），所以测试走的是和生产完全一样的代码路径 ——
+     * 区别只是「谁来触发」：生产靠时钟，测试自己调。
+     *
+     * <p>为什么要专门给测试留这个入口：原来的测试是「插一个 1 秒后到点的任务，
+     * 然后睡一会儿等后台线程自己醒」。这种写法有三个毛病 ——
+     * 慢、受机器负载影响、而且断言挂了你分不清是功能坏了还是机器慢了。
+     * 改成同步调用之后，**测试不再依赖真实时钟，也就不会再 flaky**。
+     *
+     * <p>{@code DelayQueue.poll()} 只返回**已经到点**的元素，
+     * 没到点的原样留在队列里（等下一次调用或工作线程）—— 语义正好。
+     */
+    int fireDueNow() {
+        int n = 0;
+        DueJob due;
+        while ((due = queue.poll()) != null) {
+            process(due);
+            n++;
+        }
+        return n;
+    }
+
     /** 队列当前长度，给指标用 */
     public int queueSize() {
         return queue.size();
+    }
+
+    /**
+     * 测试用：直接清空队列和去重集合，**不管到没到点**。
+     *
+     * <p>测试之间要互不影响，但队列里的任务可能还有 2 秒才到点。
+     * 之前是靠「睡一会儿等工作线程消费掉」，在慢机器上会超时、
+     * 残留的任务串到下一个测试（CI 上就出了这个症状：队列里积了 3 个）。
+     * 直接清空最干脆，也不依赖机器快慢。
+     */
+    void clearQueue() {
+        queue.clear();
+        enqueued.clear();
     }
 
     /** 已入队去重集合大小，给指标和测试用 */

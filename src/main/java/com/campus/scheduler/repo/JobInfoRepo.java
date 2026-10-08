@@ -68,6 +68,21 @@ public class JobInfoRepo {
     }
 
     /**
+     * 预取结果：任务 + **由数据库算出的**「距离到点还有多少微秒」。
+     *
+     * <p><b>为什么不让 Java 自己算</b>：那需要拿数据库的墙上时间
+     * （{@code next_trigger_time}）去套 JVM 的时区（{@code ZoneId.systemDefault()}）。
+     * 只要两边时区不一致，算出来的「到点时刻」就是错的 —— 任务永远不到点，
+     * {@code DelayQueue.take()} 一直阻塞，队列越积越多（CI 上就是这么挂的：
+     * 两个测试失败，其中一个的症状是「队列里积了 3 个任务」）。
+     *
+     * <p>让数据库用 {@code TIMESTAMPDIFF} 算「它自己的 NOW() 到 next_trigger_time
+     * 差多久」，时区就完全无关了：JVM 只负责把这个**相对时长**锚定到自己的时钟上。
+     */
+    public record Upcoming(JobInfo job, long dueInMicros) {
+    }
+
+    /**
      * ★ 预取用：捞出「未来 N 秒内将要到点」的任务，提前装进内存。
      *
      * <p>这是 {@link com.campus.scheduler.core.PrefetchScheduler} 的基础。
@@ -77,15 +92,18 @@ public class JobInfoRepo {
      * 「发现它到点」之间的延迟就不可避免地等于扫描间隔。提前把任务装进内存，
      * 到点那一刻可以直接触发，精度只受限于内存定时器的唤醒精度。
      */
-    public List<JobInfo> findUpcoming(int withinSec, int limit) {
+    public List<Upcoming> findUpcoming(int withinSec, int limit) {
         return jdbc.query("""
-                SELECT * FROM job_info
-                 WHERE status = 1
-                   AND next_trigger_time IS NOT NULL
-                   AND next_trigger_time <= NOW() + INTERVAL ? SECOND
-                 ORDER BY next_trigger_time
+                SELECT j.*, TIMESTAMPDIFF(MICROSECOND, NOW(3), j.next_trigger_time) AS due_in_us
+                  FROM job_info j
+                 WHERE j.status = 1
+                   AND j.next_trigger_time IS NOT NULL
+                   AND j.next_trigger_time <= NOW(3) + INTERVAL ? SECOND
+                 ORDER BY j.next_trigger_time
                  LIMIT ?
-                """, MAPPER, withinSec, limit);
+                """,
+                (rs, i) -> new Upcoming(MAPPER.mapRow(rs, i), rs.getLong("due_in_us")),
+                withinSec, limit);
     }
 
     /**
