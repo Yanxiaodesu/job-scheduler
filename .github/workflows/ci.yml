@@ -53,6 +53,28 @@ jobs:
       - name: 跑测试
         run: ./mvnw -B test
 
+      # ------------------------------------------------------------
+      # 把失败的测试写成 annotation。
+      #
+      # 为什么需要这一步：GitHub **下载日志**的接口要求仓库管理员权限，
+      # 第三方工具（包括我用的那些）读不到，只能让仓库主手动翻日志页面。
+      # 但 **annotation 是公开可读的**：
+      #     GET /repos/{owner}/{repo}/check-runs/{job_id}/annotations
+      #
+      # 所以失败时把摘要转成 annotation，排查时就不用再麻烦人了。
+      # 这也算是给项目补了一点「CI 可诊断性」。
+      # ------------------------------------------------------------
+      - name: 汇总失败测试（供 API 读取）
+        if: failure()
+        run: |
+          echo "===== 失败摘要 ====="
+          if ls target/surefire-reports/*.txt >/dev/null 2>&1; then
+            grep -hE 'Tests run:.*(Failures: [1-9]|Errors: [1-9])|<<< (FAILURE|ERROR)' \
+              target/surefire-reports/*.txt | sed 's/^/::error::/'
+          else
+            echo "::error::没有找到 surefire 报告 —— 说明失败发生在编译阶段，不是测试断言"
+          fi || true
+
       - name: 打包
         run: ./mvnw -B package -DskipTests
 
