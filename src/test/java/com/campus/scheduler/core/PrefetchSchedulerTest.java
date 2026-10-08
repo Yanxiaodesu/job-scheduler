@@ -84,16 +84,28 @@ class PrefetchSchedulerTest {
      * 留在队列里的任务，会被工作线程消费掉并真的触发一次 —— 于是
      * 下一个测试就会看到「凭空多出来一条实例」和「队列数对不上」。
      *
-     * <p>（这个坑我踩了：最初的清理只删表，没排空队列，两个测试因此失败。）
+     * <p><b>而且还要再等一会</b>：工作线程是「先 remove 再 fire」——
+     * <pre>
+     * DueJob due = queue.take();
+     * enqueued.remove(due.key());   // 这时 queueSize() 已经是 0
+     * trigger.fire(due.job());      // 但 fire 还没跑完
+     * </pre>
+     * 所以 {@code queueSize()==0} 只说明元素被取走了，不代表处理完了。
+     * 不等这一下，上一轮的 fire 会在我们删完表**之后**才落下一条实例，
+     * 让下个测试的「等实例出现」立刻返回 —— 而那条实例属于上一个任务，
+     * 它的 next_trigger_time 当然没变，断言就挂了。
+     *
+     * <p>（这就是这个文件一开始会 flaky 的根因：本地十次过九次、CI 上必挂。
+     * 「等一个模糊条件成立」+「共享可变状态」凑在一起最容易出这种问题。）
      */
     @BeforeEach
     void clean() throws Exception {
-        // 队列里的任务会被工作线程消费掉。等它排空 ——
-        // 预取窗口内最远 3 秒，留 6 秒足够
         long deadline = System.currentTimeMillis() + 6000;
         while (prefetch.queueSize() > 0 && System.currentTimeMillis() < deadline) {
             Thread.sleep(50);
         }
+        // 等可能还在 fire 里的那一个跑完
+        Thread.sleep(500);
 
         jdbc.update("DELETE FROM job_instance");
         jdbc.update("DELETE FROM job_log");
@@ -120,9 +132,28 @@ class PrefetchSchedulerTest {
                 """, fakeUrl);
     }
 
-    private int instances() {
-        Integer n = jdbc.queryForObject("SELECT COUNT(*) FROM job_instance", Integer.class);
+    /** 某个任务自己产生了多少条实例 */
+    private int instancesOf(long jobId) {
+        Integer n = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM job_instance WHERE job_id = ?", Integer.class, jobId);
         return n == null ? 0 : n;
+    }
+
+    /**
+     * 等**指定任务**的实例出现。
+     *
+     * <p>不能用「表里有没有实例」这种模糊条件 —— 上一轮的残留会让它立刻返回，
+     * 于是断言的是别人的数据。
+     */
+    private boolean awaitInstanceOf(long jobId, int timeoutMs) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            if (instancesOf(jobId) > 0) {
+                return true;
+            }
+            Thread.sleep(50);
+        }
+        return false;
     }
 
     @Test
@@ -178,22 +209,19 @@ class PrefetchSchedulerTest {
     @DisplayName("到点后工作线程会自动触发并派发")
     void firesWhenDue() throws Exception {
         healthyExecutor();
-        job("fire-me", 1);       // 1 秒后到点
+        long id = job("fire-me", 1);       // 1 秒后到点
 
         prefetch.prefetch();
         assertEquals(1, prefetch.queueSize(), "应该已经入队");
 
-        // 工作线程会在到点时醒来。给它留够时间
-        long deadline = System.currentTimeMillis() + 8000;
-        while (System.currentTimeMillis() < deadline && instances() == 0) {
-            Thread.sleep(100);
-        }
+        // 等工作线程到点醒来。等的是**这个任务自己**的实例
+        assertTrue(awaitInstanceOf(id, 8000), "到点后应该自动产生实例并派发出去");
 
-        assertEquals(1, instances(), "到点后应该自动产生一条实例并派发出去");
+        assertEquals(1, instancesOf(id), "这个任务应该只产生一条实例");
         assertEquals(0, prefetch.queueSize(), "触发后队列应该空了");
 
         Integer status = jdbc.queryForObject(
-                "SELECT status FROM job_instance", Integer.class);
+                "SELECT status FROM job_instance WHERE job_id = ?", Integer.class, id);
         assertEquals(JobInstance.RUNNING, status, "派发出去后应该是执行中");
     }
 
@@ -206,11 +234,7 @@ class PrefetchSchedulerTest {
                 "SELECT next_trigger_time FROM job_info WHERE id = ?", java.sql.Timestamp.class, id);
 
         prefetch.prefetch();
-        long deadline = System.currentTimeMillis() + 8000;
-        while (System.currentTimeMillis() < deadline && instances() == 0) {
-            Thread.sleep(100);
-        }
-        assertEquals(1, instances(), "前提：任务应该被触发了");
+        assertTrue(awaitInstanceOf(id, 8000), "前提：这个任务应该被触发了");
 
         var after = jdbc.queryForObject(
                 "SELECT next_trigger_time FROM job_info WHERE id = ?", java.sql.Timestamp.class, id);
