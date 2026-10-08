@@ -10,7 +10,6 @@ import org.springframework.stereotype.Repository;
 
 import java.sql.PreparedStatement;
 import java.sql.Statement;
-import java.sql.Timestamp;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -32,12 +31,19 @@ public class JobInfoRepo {
         j.setMaxRetry(rs.getInt("max_retry"));
         j.setMisfireStrategy(rs.getInt("misfire_strategy"));
         j.setStatus(rs.getInt("status"));
-        Timestamp nt = rs.getTimestamp("next_trigger_time");
-        j.setNextTriggerTime(nt == null ? null : nt.toLocalDateTime());
-        Timestamp ct = rs.getTimestamp("create_time");
-        j.setCreateTime(ct == null ? null : ct.toLocalDateTime());
-        Timestamp ut = rs.getTimestamp("update_time");
-        j.setUpdateTime(ut == null ? null : ut.toLocalDateTime());
+        // ★ 时间列一律用 getObject(..., LocalDateTime.class) 读。
+        //
+        // 不要写 rs.getTimestamp(...).toLocalDateTime()：Timestamp 表示一个「时刻」，
+        // 驱动会按「JVM 时区 ↔ serverTimezone」把它转换一遍。而 DATETIME 列
+        // 本身**没有时区概念**，这个转换纯属多余，还会让「读到的值」和
+        // 「写进去的值」对不上。
+        //
+        // 这个坑极隐蔽：开发机的 JVM 时区恰好和 JDBC URL 里的 serverTimezone
+        // 一致（都是 +08:00），转换退化成恒等变换，怎么试都没问题；
+        // 一到 UTC 的机器上（CI runner、或者没设 TZ 的容器）就整体偏 8 小时。
+        j.setNextTriggerTime(rs.getObject("next_trigger_time", LocalDateTime.class));
+        j.setCreateTime(rs.getObject("create_time", LocalDateTime.class));
+        j.setUpdateTime(rs.getObject("update_time", LocalDateTime.class));
         return j;
     };
 
@@ -103,7 +109,7 @@ public class JobInfoRepo {
     public int advanceTriggerTime(Long id, LocalDateTime expectedOld, LocalDateTime next) {
         return jdbc.update(
                 "UPDATE job_info SET next_trigger_time = ? WHERE id = ? AND next_trigger_time = ?",
-                Timestamp.valueOf(next), id, Timestamp.valueOf(expectedOld));
+                next, id, expectedOld);
     }
 
     public List<JobInfo> findAll() {
@@ -138,8 +144,7 @@ public class JobInfoRepo {
             ps.setInt(7, j.getMaxRetry());
             ps.setInt(8, j.getMisfireStrategy());
             ps.setInt(9, j.getStatus());
-            ps.setTimestamp(10, j.getNextTriggerTime() == null
-                    ? null : Timestamp.valueOf(j.getNextTriggerTime()));
+            ps.setObject(10, j.getNextTriggerTime());
             return ps;
         }, kh);
         return kh.getKey().longValue();
@@ -156,7 +161,7 @@ public class JobInfoRepo {
                 j.getCronExpr(), j.getHandlerType(), j.getHandlerValue(), j.getParam(),
                 j.getTimeoutSec(), j.getMaxRetry(), j.getMisfireStrategy(),
                 j.getStatus(),
-                j.getNextTriggerTime() == null ? null : Timestamp.valueOf(j.getNextTriggerTime()),
+                j.getNextTriggerTime(),
                 j.getId());
     }
 

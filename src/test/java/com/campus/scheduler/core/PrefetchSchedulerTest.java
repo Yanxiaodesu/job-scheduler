@@ -14,6 +14,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -234,15 +235,15 @@ class PrefetchSchedulerTest {
         healthyExecutor();
         long id = job("advance-me", 1);
         var before = jdbc.queryForObject(
-                "SELECT next_trigger_time FROM job_info WHERE id = ?", java.sql.Timestamp.class, id);
+                "SELECT next_trigger_time FROM job_info WHERE id = ?", LocalDateTime.class, id);
 
         prefetch.prefetch();
         assertTrue(awaitInstanceOf(id, 20000), "前提：这个任务应该被触发了");
 
         var after = jdbc.queryForObject(
-                "SELECT next_trigger_time FROM job_info WHERE id = ?", java.sql.Timestamp.class, id);
+                "SELECT next_trigger_time FROM job_info WHERE id = ?", LocalDateTime.class, id);
         assertNotNull(after);
-        assertTrue(after.after(before),
+        assertTrue(after.isAfter(before),
                 "触发后应该把 next_trigger_time 推进到下一次，否则会被反复触发");
     }
 }

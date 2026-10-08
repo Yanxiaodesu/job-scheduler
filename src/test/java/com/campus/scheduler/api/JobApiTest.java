@@ -201,8 +201,8 @@ class JobApiTest {
                 .andExpect(jsonPath("$.nextTriggerTime").isNotEmpty());
 
         var t = jdbc.queryForObject(
-                "SELECT next_trigger_time FROM job_info WHERE id = ?", java.sql.Timestamp.class, id);
-        assertTrue(t.toLocalDateTime().isAfter(LocalDateTime.now().minusMinutes(1)),
+                "SELECT next_trigger_time FROM job_info WHERE id = ?", LocalDateTime.class, id);
+        assertTrue(t.isAfter(LocalDateTime.now().minusMinutes(1)),
                 "启用后应该重算成未来的时间点，不能保留停用期间那个已经过去的时间");
     }
 
@@ -222,7 +222,7 @@ class JobApiTest {
     void manualTriggerDoesNotDisturbSchedule() throws Exception {
         long id = createJob(Map.of());
         var before = jdbc.queryForObject(
-                "SELECT next_trigger_time FROM job_info WHERE id = ?", java.sql.Timestamp.class, id);
+                "SELECT next_trigger_time FROM job_info WHERE id = ?", LocalDateTime.class, id);
 
         mvc.perform(post("/api/jobs/" + id + "/trigger"))
                 .andExpect(status().isOk())
@@ -233,8 +233,8 @@ class JobApiTest {
                 "SELECT COUNT(*) FROM job_instance", Integer.class));
 
         var after = jdbc.queryForObject(
-                "SELECT next_trigger_time FROM job_info WHERE id = ?", java.sql.Timestamp.class, id);
-        assertEquals(before.toLocalDateTime(), after.toLocalDateTime(),
+                "SELECT next_trigger_time FROM job_info WHERE id = ?", LocalDateTime.class, id);
+        assertEquals(before, after,
                 "手动触发不该打乱正常排期");
     }
 

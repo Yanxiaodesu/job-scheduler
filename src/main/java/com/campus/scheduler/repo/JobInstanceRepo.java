@@ -11,7 +11,7 @@ import org.springframework.stereotype.Repository;
 
 import java.sql.PreparedStatement;
 import java.sql.Statement;
-import java.sql.Timestamp;
+import java.time.LocalDateTime;
 import java.util.List;
 
 @Repository
@@ -26,18 +26,15 @@ public class JobInstanceRepo {
         t.setJobId(rs.getLong("job_id"));
         long eid = rs.getLong("executor_id");
         t.setExecutorId(rs.wasNull() ? null : eid);
-        Timestamp tt = rs.getTimestamp("trigger_time");
-        t.setTriggerTime(tt == null ? null : tt.toLocalDateTime());
+        // 时间列用 LocalDateTime 读，不要用 Timestamp —— 见 JobInfoRepo.MAPPER 的长注释
+        t.setTriggerTime(rs.getObject("trigger_time", LocalDateTime.class));
         t.setInstanceKey(rs.getString("instance_key"));
-        Timestamp st = rs.getTimestamp("start_time");
-        t.setStartTime(st == null ? null : st.toLocalDateTime());
-        Timestamp et = rs.getTimestamp("end_time");
-        t.setEndTime(et == null ? null : et.toLocalDateTime());
+        t.setStartTime(rs.getObject("start_time", LocalDateTime.class));
+        t.setEndTime(rs.getObject("end_time", LocalDateTime.class));
         t.setStatus(rs.getInt("status"));
         t.setRetryCount(rs.getInt("retry_count"));
         t.setResultMsg(rs.getString("result_msg"));
-        Timestamp ct = rs.getTimestamp("create_time");
-        t.setCreateTime(ct == null ? null : ct.toLocalDateTime());
+        t.setCreateTime(rs.getObject("create_time", LocalDateTime.class));
         return t;
     };
 
@@ -69,7 +66,7 @@ public class JobInstanceRepo {
                         VALUES (?,?,?,?)
                         """, Statement.RETURN_GENERATED_KEYS);
                 ps.setLong(1, jobId);
-                ps.setTimestamp(2, Timestamp.valueOf(triggerTime));
+                ps.setObject(2, triggerTime);
                 ps.setString(3, instanceKey);
                 ps.setInt(4, JobInstance.PENDING);
                 return ps;

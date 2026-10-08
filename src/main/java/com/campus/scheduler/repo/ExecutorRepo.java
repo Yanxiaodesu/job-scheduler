@@ -6,7 +6,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
 
-import java.sql.Timestamp;
+import java.time.LocalDateTime;
 import java.util.List;
 
 @Repository
@@ -20,11 +20,10 @@ public class ExecutorRepo {
         e.setId(rs.getLong("id"));
         e.setAppName(rs.getString("app_name"));
         e.setAddress(rs.getString("address"));
-        Timestamp hb = rs.getTimestamp("last_heartbeat");
-        e.setLastHeartbeat(hb == null ? null : hb.toLocalDateTime());
+        // 时间列用 LocalDateTime 读，不要用 Timestamp —— 见 JobInfoRepo.MAPPER 的长注释
+        e.setLastHeartbeat(rs.getObject("last_heartbeat", LocalDateTime.class));
         e.setStatus(rs.getInt("status"));
-        Timestamp ct = rs.getTimestamp("create_time");
-        e.setCreateTime(ct == null ? null : ct.toLocalDateTime());
+        e.setCreateTime(rs.getObject("create_time", LocalDateTime.class));
         return e;
     };
 
