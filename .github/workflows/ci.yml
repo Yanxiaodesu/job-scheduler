@@ -171,13 +171,25 @@ jobs:
           echo "$DUP"
           echo "$DUP" | grep -q '"ok":true' || { echo "有重复实例"; exit 1; }
 
-          M=$(curl -sf http://127.0.0.1:8080/api/metrics)
-          echo "$M"
-          SUCCESS=$(echo "$M" | grep -o '"success":[0-9]*' | head -1 | cut -d: -f2)
+          # ★ 成功数必须查数据库，不能从 /api/metrics 里 grep。
+          #
+          #   /api/metrics 的 JSON 里 "success" 出现两次：
+          #     executor.success  —— 这个进程自己的执行器内存计数器
+          #     instances.success —— 数据库里状态为成功的实例数
+          #   而这里查的是 **Admin**（8080）的指标，Admin 不执行任务，
+          #   它的 executor.success 恒为 0。之前用
+          #       grep -o '"success":[0-9]*' | head -1
+          #   取到的是前者，于是永远判定「没有任务执行成功」——
+          #   这个断言在 CI 上从来没通过过（这个 job 之前一直被跳过的）。
+          SUCCESS=$(mysql -h 127.0.0.1 -P 3306 -uroot -proot -N -B job_scheduler \
+            -e "SELECT COUNT(*) FROM job_instance WHERE status = 2")
+          TOTAL=$(mysql -h 127.0.0.1 -P 3306 -uroot -proot -N -B job_scheduler \
+            -e "SELECT COUNT(*) FROM job_instance")
+          echo "实例总数=$TOTAL  成功=$SUCCESS"
           if [ "${SUCCESS:-0}" -lt 1 ]; then
-            echo "没有任何任务执行成功"
-            cat /tmp/admin.log
-            cat /tmp/exec.log
+            echo "::error::没有任何任务执行成功（实例总数=$TOTAL）"
+            echo "======== admin.log ========"; cat /tmp/admin.log
+            echo "======== exec.log ========";  cat /tmp/exec.log
             exit 1
           fi
           echo "端到端冒烟通过：成功执行 $SUCCESS 次，零重复"
@@ -185,10 +197,17 @@ jobs:
       - name: 失败时打印日志
         if: failure()
         run: |
+          echo "::error::端到端冒烟失败，详见下面的日志"
           echo "======== admin.log ========"
-          cat /tmp/admin.log || true
+          tail -60 /tmp/admin.log || true
           echo "======== exec.log ========"
-          cat /tmp/exec.log || true
+          tail -60 /tmp/exec.log || true
+          echo "======== 实例表 ========"
+          mysql -h 127.0.0.1 -P 3306 -uroot -proot -B job_scheduler \
+            -e "SELECT id, job_id, status, retry_count, result_msg, trigger_time FROM job_instance" || true
+          echo "======== 任务表 ========"
+          mysql -h 127.0.0.1 -P 3306 -uroot -proot -B job_scheduler \
+            -e "SELECT id, job_name, status, next_trigger_time FROM job_info" || true
 
   # ------------------------------------------------------------
   # 镜像能构建。
