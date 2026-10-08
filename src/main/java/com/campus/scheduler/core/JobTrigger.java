@@ -80,7 +80,12 @@ public class JobTrigger {
         // ---------- ② 推进 next_trigger_time（带旧值条件 = 乐观锁）----------
         // 无论上面抢没抢到都要尝试推进：抢输的人也推一次，
         // 是为了兜住「抢到的人推进前崩了」的情况
-        LocalDateTime next = CronSupport.next(job.getCronExpr(), LocalDateTime.now());
+        //
+        // ★ 用**数据库的时钟**算下一次，不能用 LocalDateTime.now()：
+        //   next_trigger_time 本来就是数据库写的，而 JVM 的时区/时钟未必和它一致。
+        //   拿 JVM 时钟去算，可能算出一个**比旧值更早**的时刻 —— 任务就会被反复触发，
+        //   恰恰是「推进到下一次」要防的事。CI 上就是这么暴露的。
+        LocalDateTime next = CronSupport.next(job.getCronExpr(), jobRepo.now());
         jobRepo.advanceTriggerTime(job.getId(), triggerTime, next);
 
         if (instanceId == null) {

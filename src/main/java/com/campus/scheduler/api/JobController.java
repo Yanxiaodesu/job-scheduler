@@ -80,7 +80,11 @@ public class JobController {
         j.setMisfireStrategy(form.getMisfireStrategy());
         j.setStatus(form.getStatus());
         // ★ 新建任务时就把下次触发时间算好，否则它永远不会被扫到
-        j.setNextTriggerTime(CronSupport.next(form.getCronExpr()));
+        //   ★★ 基准时间用**数据库的时钟**（jobRepo.now()），不能用 JVM 的：
+        //      这个值会写进 next_trigger_time，而调度循环是拿它和数据库的
+        //      NOW() 比的。两边时区/时钟不一致时，任务要么永远不触发，
+        //      要么被反复触发。
+        j.setNextTriggerTime(CronSupport.next(form.getCronExpr(), jobRepo.now()));
 
         Long id = jobRepo.insert(j);
         log.info("创建任务 id={} name={} cron={} next={}", id, j.getJobName(), j.getCronExpr(),
@@ -105,8 +109,8 @@ public class JobController {
         j.setMaxRetry(form.getMaxRetry());
         j.setMisfireStrategy(form.getMisfireStrategy());
         j.setStatus(form.getStatus());
-        // 改了 cron 就重算下次触发时间
-        j.setNextTriggerTime(CronSupport.next(form.getCronExpr()));
+        // 改了 cron 就重算下次触发时间（基准时间同样用数据库的时钟）
+        j.setNextTriggerTime(CronSupport.next(form.getCronExpr(), jobRepo.now()));
         jobRepo.update(j);
         return ResponseEntity.ok(Map.of("ok", true));
     }
@@ -121,7 +125,7 @@ public class JobController {
         // 不重算的话它一启用就会被判定为 misfire
         jobRepo.setStatus(id, 1);
         j.setStatus(1);
-        j.setNextTriggerTime(CronSupport.next(j.getCronExpr()));
+        j.setNextTriggerTime(CronSupport.next(j.getCronExpr(), jobRepo.now()));
         jobRepo.update(j);
         return ResponseEntity.ok(Map.of("ok", true, "nextTriggerTime", j.getNextTriggerTime().toString()));
     }

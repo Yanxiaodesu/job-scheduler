@@ -83,6 +83,23 @@ public class JobInfoRepo {
     }
 
     /**
+     * 数据库的当前时间。
+     *
+     * <p><b>算「下一次触发时刻」必须用它，不能用 {@code LocalDateTime.now()}。</b>
+     *
+     * <p>原因：{@code next_trigger_time} 是数据库的时钟写的，如果拿 JVM 的时钟去算
+     * 「下一次」，两边时区或时钟不一致时算出来的时刻可能落在**过去** ——
+     * 任务会被反复触发。CI 上就是这么暴露的（一个断言报
+     * 「触发后应该把 next_trigger_time 推进到下一次」，因为推进后的值反而更早）。
+     *
+     * <p>和 {@code JobInfoRepo.Upcoming} 是同一类修法：**凡是和时间有关的计算，
+     * 都以数据库的时钟为准**，JVM 只负责相对量。
+     */
+    public LocalDateTime now() {
+        return jdbc.queryForObject("SELECT NOW(3)", LocalDateTime.class);
+    }
+
+    /**
      * ★ 预取用：捞出「未来 N 秒内将要到点」的任务，提前装进内存。
      *
      * <p>这是 {@link com.campus.scheduler.core.PrefetchScheduler} 的基础。
