@@ -161,3 +161,33 @@ jobs:
           cat /tmp/admin.log || true
           echo "======== exec.log ========"
           cat /tmp/exec.log || true
+
+  # ------------------------------------------------------------
+  # 镜像能构建。
+  #
+  # 为什么单独一个 job：README 里写了「docker compose up 一键启动」，
+  # 而**开发机上根本没装 Docker** —— Dockerfile 和 docker-compose.yml
+  # 是照标准写法写的、从没构建过一次。这个 job 就是用来补那次验证的。
+  #
+  # 和 test 并行跑（不写 needs）：镜像能不能构建跟测试过不过没关系，
+  # 而且并行能更早拿到结果。
+  # ------------------------------------------------------------
+  docker:
+    name: 镜像构建
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 构建镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: job-scheduler:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 校验 compose 配置合法
+        run: docker compose config --quiet
