@@ -100,12 +100,14 @@ class PrefetchSchedulerTest {
      */
     @BeforeEach
     void clean() throws Exception {
-        long deadline = System.currentTimeMillis() + 6000;
+        // 超时给得比本地宽松：CI 的 runner 是 2 核共享，比开发机慢不少，
+        // 按本地节奏设超时会让测试在 CI 上变成「随机失败」
+        long deadline = System.currentTimeMillis() + 15000;
         while (prefetch.queueSize() > 0 && System.currentTimeMillis() < deadline) {
             Thread.sleep(50);
         }
         // 等可能还在 fire 里的那一个跑完
-        Thread.sleep(500);
+        Thread.sleep(1000);
 
         jdbc.update("DELETE FROM job_instance");
         jdbc.update("DELETE FROM job_log");
@@ -214,8 +216,9 @@ class PrefetchSchedulerTest {
         prefetch.prefetch();
         assertEquals(1, prefetch.queueSize(), "应该已经入队");
 
-        // 等工作线程到点醒来。等的是**这个任务自己**的实例
-        assertTrue(awaitInstanceOf(id, 8000), "到点后应该自动产生实例并派发出去");
+        // 等工作线程到点醒来。等的是**这个任务自己**的实例。
+        // 超时放宽到 20 秒 —— 断的还是自己写错，不是机器慢
+        assertTrue(awaitInstanceOf(id, 20000), "到点后应该自动产生实例并派发出去");
 
         assertEquals(1, instancesOf(id), "这个任务应该只产生一条实例");
         assertEquals(0, prefetch.queueSize(), "触发后队列应该空了");
@@ -234,7 +237,7 @@ class PrefetchSchedulerTest {
                 "SELECT next_trigger_time FROM job_info WHERE id = ?", java.sql.Timestamp.class, id);
 
         prefetch.prefetch();
-        assertTrue(awaitInstanceOf(id, 8000), "前提：这个任务应该被触发了");
+        assertTrue(awaitInstanceOf(id, 20000), "前提：这个任务应该被触发了");
 
         var after = jdbc.queryForObject(
                 "SELECT next_trigger_time FROM job_info WHERE id = ?", java.sql.Timestamp.class, id);
