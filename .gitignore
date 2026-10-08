@@ -40,3 +40,11 @@ logs/
 # 本地数据库密码之类的别提交
 application-local.yml
 .env
+
+# ★ 本机的 Maven 配置，**绝对不能提交**。
+#
+# 它里面写的是本机路径（比如 -s D:\java\m2\settings.xml 指向阿里云镜像），
+# Linux/macOS 上根本不存在这个路径 —— 一旦提交，CI 会在 2 秒内构建失败，
+# 而错误信息只说「settings 文件不存在」，很难联想到是本地配置漏进仓库了。
+# 这个坑踩过一次，见 README「验证状态」。
+.mvn/maven.config

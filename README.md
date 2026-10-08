@@ -455,8 +455,8 @@ python scripts/benchmark.py
 | 失败重试 / 超时看门狗 | ✅ 实测 | 重试 3 次后终结；超时被判 4 |
 | 调度吞吐 | ✅ 实测 | 300 任务 8~9 秒，**34~36 个/秒**，300/300 成功 |
 | 压测脚本 | ✅ 跑过 | `python scripts/benchmark.py` |
-| **Dockerfile / docker-compose** | ⚠️ **未验证** | **本机没装 Docker**，文件是照标准写法给的，用之前请先 `docker compose up --build` 跑一次 |
-| **GitHub Actions CI** | ⚠️ **未验证** | 本地无法触发，要 push 到 GitHub 才会跑 |
+| **Dockerfile / docker-compose** | ✅ **CI 已验证** | 本机没装 Docker，但 CI 的「镜像构建」job 已跑通：镜像构建成功 + compose 配置校验通过 |
+| **GitHub Actions CI** | ✅ 已跑通 | 见仓库 Actions 页；`mvnw` 的可执行位、本地 Maven 配置都踩过坑，详见下方说明 |
 
 
 ### 9. 轮询扫描的精度天花板 —— 缩短间隔是条死路
