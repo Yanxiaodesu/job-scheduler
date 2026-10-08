@@ -69,8 +69,14 @@ jobs:
         run: |
           echo "===== 失败摘要 ====="
           if ls target/surefire-reports/*.txt >/dev/null 2>&1; then
-            grep -hE 'Tests run:.*(Failures: [1-9]|Errors: [1-9])|<<< (FAILURE|ERROR)' \
-              target/surefire-reports/*.txt | sed 's/^/::error::/'
+            # 每个失败的测试连同**它的断言消息**一起输出。
+            # 只输出「哪个测试挂了」不够用 —— 断言消息才是定位的关键。
+            for f in target/surefire-reports/*.txt; do
+              awk '/<<< (FAILURE|ERROR)!/{p=1} p&&c<8{print; c++} /^$/{if(p)exit}' "$f" \
+                | sed 's/^/::error::/'
+            done
+            grep -hE '^Tests run:.*(Failures: [1-9]|Errors: [1-9])' \
+              target/surefire-reports/*.txt | sed 's/^/::error::/' || true
           else
             echo "::error::没有找到 surefire 报告 —— 说明失败发生在编译阶段，不是测试断言"
           fi || true

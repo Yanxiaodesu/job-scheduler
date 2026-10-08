@@ -115,13 +115,24 @@ class PrefetchSchedulerTest {
         return jdbc.queryForObject("SELECT id FROM job_info WHERE job_name = ?", Long.class, name);
     }
 
-    /** 建一个**已经到点**的任务（next_trigger_time = 数据库的现在） */
+    /**
+     * 建一个**已经到点**的任务。
+     *
+     * <p>用 {@code NOW(3) - INTERVAL 1 SECOND} 而不是 {@code NOW(3)}：
+     * 后者是毫秒级的，和随后那次预取查询几乎在同一毫秒，
+     * {@code TIMESTAMPDIFF(MICROSECOND, NOW(3), next_trigger_time)}
+     * 可能算出 0 甚至 +1 毫秒 —— 那「到点时刻」就落在未来一点点，
+     * {@code DelayQueue.poll()} 立刻返回 null，断言随机失败（CI 上就是这么挂的）。
+     *
+     * <p>往回退 1 秒，到不到点就没有任何歧义了。
+     */
     private long dueJob(String name) {
         jdbc.update("""
                 INSERT INTO job_info
                   (job_name, cron_expr, handler_type, handler_value, param,
                    timeout_sec, max_retry, misfire_strategy, status, next_trigger_time)
-                VALUES (?, '* * * * * *', 1, 'printTime', NULL, 10, 0, 2, 1, NOW(3))
+                VALUES (?, '* * * * * *', 1, 'printTime', NULL, 10, 0, 2, 1,
+                        NOW(3) - INTERVAL 1 SECOND)
                 """, name);
         return jdbc.queryForObject("SELECT id FROM job_info WHERE job_name = ?", Long.class, name);
     }
